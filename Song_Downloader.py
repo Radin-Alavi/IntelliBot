@@ -2,11 +2,11 @@ import yt_dlp
 
 def download_song(song_name):
     ydl_opts = {
-        'noplaylist': True,               # غیرفعال کردن دانلود پلی‌لیست
-        'age_limit': 18,                  # تنظیم محدودیت سنی
-        'ignoreerrors': True,             # ادامه‌ی دانلود در صورت بروز خطا
-        'geo_bypass': True,               # بای‌پس محدودیت جغرافیایی
-        'extract_flat': 'in_playlist'     # بهبود استخراج لینک
+        'noplaylist': True,              
+        'age_limit': 18,                 
+        'ignoreerrors': True,             
+        'geo_bypass': True,               
+        'extract_flat': 'in_playlist'     
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
