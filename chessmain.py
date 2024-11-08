@@ -6,12 +6,12 @@ class Main:
     def __init__(self, board=ch.Board):
         self.board=board
 
-    #play human move
+    #حرکت کاربر
     def playHumanMove(self):
         try:
             print(self.board.legal_moves)
             print("""To undo your last move, type "undo".""")
-            #get human move
+            #ورود حرکت کاربر به صفحه
             play = input("Your move: ")
             if (play=="undo"):
                 self.board.pop()
@@ -22,14 +22,14 @@ class Main:
         except:
             self.playHumanMove()
 
-    #play engine move
+    #حرکت ENGINE
     def playEngineMove(self, maxDepth, color):
         engine = ce.Engine(self.board, maxDepth, color)
         self.board.push(engine.getBestMove())
 
-    #start a game
+    #شروع بازی
     def startGame(self):
-        #get human player's color
+        #از کاربر بپرسه که کدوم رنگ دوست داره بازی کنه؟
         color=None
         while(color!="b" and color!="w"):
             color = input("""Play as (type "b" or "w"): """)
@@ -54,12 +54,10 @@ class Main:
                 self.playEngineMove(maxDepth, ch.BLACK)
             print(self.board)
             print(self.board.outcome())
-        #reset the board
+        #ریست صفحه
         self.board.reset
-        #start another game
+        #بازی مجدد
         self.startGame()
-
-#create an instance and start a game
 newBoard= ch.Board()
 game = Main(newBoard)
 bruh = game.startGame()
