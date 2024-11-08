@@ -1,4 +1,4 @@
-import chessengine as ce
+import chessenginekho as ce
 import chess as ch
 
 class Main:
