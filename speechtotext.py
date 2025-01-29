@@ -7,7 +7,6 @@ def record_text():
             print("در حال گوش دادن...")
             r.adjust_for_ambient_noise(source2, duration=0.05)
             audio2 = r.listen(source2)
-            # تنظیم زبان به فارسی
             Mytext = r.recognize_google(audio2, language="fa-IR")
             return Mytext     
     except sr.RequestError:
