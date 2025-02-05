@@ -1,6 +1,5 @@
-from translate import Translator
+from deep_translator import GoogleTranslator
 def translate(text, origin, destination):
-    translator = Translator(destination)
-    translated_text = translator.translate(text)
-    print(translated_text)
-    return translated_text
+    translated = GoogleTranslator(source=origin, target=destination).translate(text)
+    print(translated)
+    return translated
