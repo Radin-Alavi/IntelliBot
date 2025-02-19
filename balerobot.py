@@ -10,7 +10,6 @@ import arabic_reshaper
 from bidi.algorithm import get_display
 import re
 
-# مسیر برنامه Stockfish
 STOCKFISH_PATH = r"stockfish-windows-x86-64-avx2.exe"
 PIECE_SYMBOLS = {
     'p': '♙', 'r': '♖', 'n': '♘', 'b': '♗', 'q': '♕', 'k': '♔',
