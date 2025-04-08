@@ -46,44 +46,33 @@ def reshape_text_if_persian(text):
         return get_display(reshaped_text)
     return text
 
-def display_board(board):
-    """ دریافت و ذخیره تصویر صفحه شطرنج"""
-    import urllib.parse
+import urllib.parse
+from io import BytesIO
 
+async def send_board_image(chat_id, board):
+    """ ارسال مستقیم تصویر صفحه شطرنج از URL """
     fen = board.fen()
     fen_encoded = urllib.parse.quote(fen, safe='')
-    url = f"https://lichess1.org/export/fen.gif?fen={fen_encoded}&color=white"
+    url = f"https://chessboardimage.com/{fen_encoded}.png"
 
-    print(" Generated URL:", url)
-
-    file_name = f"chess_board_{hash(fen)}.jpg"
-    file_path = os.path.join("chess_boards", file_name)
-
-    if not os.path.exists("chess_boards"):
-        os.makedirs("chess_boards")
-
-    if not os.path.exists(file_path):
+    try:
         res = requests.get(url, stream=True)
         if res.status_code == 200:
-            with open(file_path, 'wb') as f:
-                shutil.copyfileobj(res.raw, f)
-            print("✅ تصویر با موفقیت ذخیره شد:", file_path)
+            img_data = BytesIO(res.content)
+            img_data.name = "chess_board.png"
+            await client.send_document(chat_id=chat_id, document=InputFile(img_data))
         else:
-            print(f"❌ خطا در دریافت تصویر: {res.status_code}, {res.text}")
-            return None
-
-    return file_path
+            await client.send_message(chat_id=chat_id, text="❌ خطا در دریافت تصویر شطرنج.")
+    except Exception as e:
+        await client.send_message(chat_id=chat_id, text=f"❌ خطا در ارسال تصویر: {e}")
 
 async def play_chess(chat_id, color):
-    """♟️ بازی شطرنج با کاربر"""
     if not os.path.exists(STOCKFISH_PATH):
-        await client.send_message(chat_id=chat_id, text="❌ موتور Stockfish یافت نشد! لطفاً مسیر را بررسی کنید.")
+        await client.send_message(chat_id=chat_id, text="❌ موتور Stockfish یافت نشد!")
         return
 
     board = chess.Board()
     user_input_state[chat_id] = {"board": board, "color": color}
-
-    file_path = display_board(board)
 
     try:
         with chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH) as engine:
@@ -91,19 +80,17 @@ async def play_chess(chat_id, color):
                 result = engine.play(board, chess.engine.Limit(time=1.0))
                 board.push(result.move)
 
-                file_path = display_board(board)
-
                 await client.send_message(chat_id=chat_id, text="♟️ **Stockfish بازی را شروع کرد!**")
-                await client.send_document(chat_id=chat_id, document=InputFile(file_path))
+                await send_board_image(chat_id, board)
                 await client.send_message(chat_id=chat_id, text="♔ **نوبت شما! حرکت خود را ارسال کنید.**")
             else:
                 await client.send_message(chat_id=chat_id, text="♔ **شما سفید هستید! بازی را شروع کنید.**")
-                await client.send_document(chat_id=chat_id, document=InputFile(file_path))
+                await send_board_image(chat_id, board)
 
             user_input_state[chat_id]["awaiting_move"] = True
 
     except PermissionError:
-        await client.send_message(chat_id=chat_id, text="❌ خطای دسترسی: لطفاً مجوزهای اجرای Stockfish را بررسی کنید.")
+        await client.send_message(chat_id=chat_id, text="❌ خطای دسترسی به Stockfish.")
     except Exception as e:
         await client.send_message(chat_id=chat_id, text=f"❌ خطای غیرمنتظره: {e}")
 
@@ -148,7 +135,12 @@ async def on_message(message: Message):
         else:
             board_image_path = display_board(board)
             await client.send_message(chat_id, text="♟️ **Stockfish حرکت کرد!**")
-            await client.send_document(chat_id, document=InputFile(board_image_path))
+            file_path = display_board(board)
+        if file_path:
+            await client.send_document(chat_id=chat_id, document=InputFile(file_path))
+        else:
+            await client.send_message(chat_id=chat_id, text="❌ خطا در تولید تصویر صفحه شطرنج.")
+
             await client.send_message(chat_id, text="♔ **نوبت شماست! حرکت خود را بفرستید.**")
 
     if message.document:
