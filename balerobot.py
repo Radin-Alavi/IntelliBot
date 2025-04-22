@@ -3,20 +3,45 @@ import chess
 import chess.engine
 import os
 from PyPDF2 import PdfReader, PdfWriter
-from docx import Document
-from reportlab.pdfgen import canvas
 from pathlib import Path
 import arabic_reshaper
-from bidi.algorithm import get_display
 import re
 import requests
 import shutil
 import random
-import YoutubeDownloader
-from translate import Translator
+from googletrans import Translator as GoogleTranslator
+from deep_translator import GoogleTranslator
+import ssl
+import aiohttp
+import certifi
+ssl_context = ssl.create_default_context(cafile=certifi.where())
+
+async def make_request():
+    async with aiohttp.ClientSession() as session:
+        async with session.get('https://tapi.bale.ai', ssl=ssl_context) as response:
+            print(await response.text())
+
+import asyncio
+asyncio.run(make_request())
+
+
+language_map = {
+    "انگلیسی": "en",
+    "فارسی": "fa",
+    "فرانسوی": "fr",
+    "آلمانی": "de",
+    "ترکی": "tr",
+    "عربی": "ar",
+    "چینی": "zh-CN",
+    "ژاپنی": "ja",
+    "روسی": "ru",
+    "اسپانیایی": "es",
+    "ایتالیایی": "it"
+}
+
 
 #  مسیر به موتور Stockfish
-STOCKFISH_PATH = r"stockfish-windows-x86-64-avx2.exe"
+STOCKFISH_PATH = r"C:\Users\Lenovo\Documents\Pajoheshi\stockfish-windows-x86-64-avx2 copy.exe"
 
 #  راه‌اندازی ربات با توکن شما
 client = Bot(token="1073138097:49XMJIzGSAXXffU4p5hFbiDQB6NLp7RCxqdDpPeW")
@@ -46,33 +71,44 @@ def reshape_text_if_persian(text):
         return get_display(reshaped_text)
     return text
 
-import urllib.parse
-from io import BytesIO
+def display_board(board):
+    """ دریافت و ذخیره تصویر صفحه شطرنج"""
+    import urllib.parse
 
-async def send_board_image(chat_id, board):
-    """ ارسال مستقیم تصویر صفحه شطرنج از URL """
     fen = board.fen()
     fen_encoded = urllib.parse.quote(fen, safe='')
-    url = f"https://chessboardimage.com/{fen_encoded}.png"
+    url = f"https://lichess1.org/export/fen.gif?fen={fen_encoded}&color=white"
 
-    try:
+    print(" Generated URL:", url)
+
+    file_name = f"chess_board_{hash(fen)}.jpg"
+    file_path = os.path.join("chess_boards", file_name)
+
+    if not os.path.exists("chess_boards"):
+        os.makedirs("chess_boards")
+
+    if not os.path.exists(file_path):
         res = requests.get(url, stream=True)
         if res.status_code == 200:
-            img_data = BytesIO(res.content)
-            img_data.name = "chess_board.png"
-            await client.send_document(chat_id=chat_id, document=InputFile(img_data))
+            with open(file_path, 'wb') as f:
+                shutil.copyfileobj(res.raw, f)
+            print("✅ تصویر با موفقیت ذخیره شد:", file_path)
         else:
-            await client.send_message(chat_id=chat_id, text="❌ خطا در دریافت تصویر شطرنج.")
-    except Exception as e:
-        await client.send_message(chat_id=chat_id, text=f"❌ خطا در ارسال تصویر: {e}")
+            print(f"❌ خطا در دریافت تصویر: {res.status_code}, {res.text}")
+            return None
+
+    return file_path
 
 async def play_chess(chat_id, color):
+    """♟️ بازی شطرنج با کاربر"""
     if not os.path.exists(STOCKFISH_PATH):
-        await client.send_message(chat_id=chat_id, text="❌ موتور Stockfish یافت نشد!")
+        await client.send_message(chat_id=chat_id, text="❌ موتور Stockfish یافت نشد! لطفاً مسیر را بررسی کنید.")
         return
 
     board = chess.Board()
     user_input_state[chat_id] = {"board": board, "color": color}
+
+    file_path = display_board(board)
 
     try:
         with chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH) as engine:
@@ -80,17 +116,24 @@ async def play_chess(chat_id, color):
                 result = engine.play(board, chess.engine.Limit(time=1.0))
                 board.push(result.move)
 
+                file_path = display_board(board)
+
                 await client.send_message(chat_id=chat_id, text="♟️ **Stockfish بازی را شروع کرد!**")
-                await send_board_image(chat_id, board)
+                with open(file_path, "rb") as test:
+                    file = InputFile(test.read())
+                    await client.send_photo(chat_id, file)
+                    os.remove(file_path)
                 await client.send_message(chat_id=chat_id, text="♔ **نوبت شما! حرکت خود را ارسال کنید.**")
             else:
                 await client.send_message(chat_id=chat_id, text="♔ **شما سفید هستید! بازی را شروع کنید.**")
-                await send_board_image(chat_id, board)
-
+                with open(file_path, "rb") as test:
+                    file = InputFile(test.read())
+                    await client.send_photo(chat_id, file)
+                os.remove(file_path)
             user_input_state[chat_id]["awaiting_move"] = True
 
     except PermissionError:
-        await client.send_message(chat_id=chat_id, text="❌ خطای دسترسی به Stockfish.")
+        await client.send_message(chat_id=chat_id, text="❌ خطای دسترسی: لطفاً مجوزهای اجرای Stockfish را بررسی کنید.")
     except Exception as e:
         await client.send_message(chat_id=chat_id, text=f"❌ خطای غیرمنتظره: {e}")
 
@@ -102,46 +145,47 @@ async def on_message(message: Message):
         await client.send_message(chat_id, text="❌ پیام نامعتبر است.")
         return
 
-    if chat_id in user_input_state and user_input_state[chat_id].get("awaiting_move"):
-        board = user_input_state[chat_id].get("board")
+    if chat_id in user_input_state:
+        state = user_input_state[chat_id]
+        if chat_id in user_input_state:
+            state = user_input_state[chat_id]
 
-        if not board:
-            await client.send_message(chat_id, text="❌ خطا در دریافت وضعیت بازی. لطفاً مجدداً تلاش کنید.")
-            return
-
-        try:
-            move = chess.Move.from_uci(message.content.strip())
-            if board.is_legal(move):
-                board.push(move)
-            else:
-                await client.send_message(chat_id, text="❌ حرکت نامعتبر. دوباره امتحان کنید.")
+        if state.get("awaiting_move"):
+            board = state.get("board")
+            if not board:
+                await client.send_message(chat_id, text="❌ خطا در وضعیت بازی.")
                 return
-        except ValueError:
-            await client.send_message(chat_id, text="❌ فرمت حرکت نامعتبر. دوباره امتحان کنید.")
-            return
+            try:
+                move = board.parse_san(message.content.strip())
+                if board.is_legal(move):
+                    board.push(move)
+                else:
+                    await client.send_message(chat_id, text="❌ حرکت نامعتبر. دوباره امتحان کنید.")
+                    return
+            except ValueError:
+                await client.send_message(chat_id, text="❌ فرمت حرکت اشتباهه. مثلاً: `e4` یا `Nf3`")
+                return
 
-        with chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH) as engine:
+            with chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH) as engine:
+                if board.is_game_over():
+                    await client.send_message(chat_id, text=f"🏁 بازی تمام شد! نتیجه: {board.result()}")
+                    del user_input_state[chat_id]
+                    return
+
+                result = engine.play(board, chess.engine.Limit(time=1.0))
+                board.push(result.move)
+
             if board.is_game_over():
-                await client.send_message(chat_id, text=f" بازی تمام شد! نتیجه: {board.result()}")
+                await client.send_message(chat_id, text=f"🏁 بازی تمام شد! نتیجه: {board.result()}")
                 del user_input_state[chat_id]
-                return
-
-            result = engine.play(board, chess.engine.Limit(time=1.0))
-            board.push(result.move)
-
-        if board.is_game_over():
-            await client.send_message(chat_id, text=f" بازی تمام شد! نتیجه: {board.result()}")
-            del user_input_state[chat_id]
-        else:
-            board_image_path = display_board(board)
-            await client.send_message(chat_id, text="♟️ **Stockfish حرکت کرد!**")
-            file_path = display_board(board)
-        if file_path:
-            await client.send_document(chat_id=chat_id, document=InputFile(file_path))
-        else:
-            await client.send_message(chat_id=chat_id, text="❌ خطا در تولید تصویر صفحه شطرنج.")
-
-            await client.send_message(chat_id, text="♔ **نوبت شماست! حرکت خود را بفرستید.**")
+            else:
+                image_path = display_board(board)
+                await client.send_message(chat_id, text="♟️ **Stockfish حرکت کرد!**")
+                with open(image_path, "rb") as f:
+                    await client.send_photo(chat_id, InputFile(f.read()))
+                os.remove(image_path)
+                await client.send_message(chat_id, text="♔ **نوبت شماست!**")
+            return
 
     if message.document:
         file = message.document
@@ -183,27 +227,44 @@ async def on_message(message: Message):
             await client.send_message(chat_id, text=f"❌ خطای غیرمنتظره در ChatGPT: {e}")
         del user_input_state[chat_id]
 
-    elif chat_id in user_input_state and user_input_state[chat_id].get("awaiting") == "origin":
-        user_input_state[chat_id]["origin_lang"] = message.content
-        user_input_state[chat_id]["awaiting"] = "destination"
-        await client.send_message(chat_id, text=" لطفاً زبان مقصد را وارد کنید:")
+    # در on_message:
 
-    elif chat_id in user_input_state and user_input_state[chat_id].get("awaiting") == "destination":
-        user_input_state[chat_id]["destination_lang"] = message.content
-        user_input_state[chat_id]["awaiting"] = "text_to_translate"
-        await client.send_message(chat_id, text=" لطفاً متن مورد نظر برای ترجمه را وارد کنید:")
+    if chat_id in user_input_state:
+        await_state = user_input_state[chat_id].get("awaiting")
 
-    elif chat_id in user_input_state and user_input_state[chat_id].get("awaiting") == "text_to_translate":
-        text_to_translate = message.content
-        origin_lang = user_input_state[chat_id]["origin_lang"]
-        destination_lang = user_input_state[chat_id]["destination_lang"]
-        try:
-            translator = Translator(from_lang=origin_lang, to_lang=destination_lang)
-            translated_text = translator.translate(text_to_translate)
-            await client.send_message(chat_id, text=f"✅ متن ترجمه شده: {translated_text}")
-        except Exception as e:
-            await client.send_message(chat_id, text=f"❌ خطای غیرمنتظره در ترجمه: {e}")
-        del user_input_state[chat_id]
+        if await_state == "origin":
+            lang_input = message.content.strip()
+            if lang_input not in language_map:
+                await client.send_message(chat_id, text="❌ زبان مبدأ ناشناخته است. مثلاً: فارسی، انگلیسی، فرانسوی")
+                return
+            user_input_state[chat_id]["origin_lang"] = language_map[lang_input]
+            user_input_state[chat_id]["awaiting"] = "destination"
+            await client.send_message(chat_id, text="✅ حالا زبان مقصد را وارد کنید:")
+            return
+
+        elif await_state == "destination":
+            lang_input = message.content.strip()
+            if lang_input not in language_map:
+                await client.send_message(chat_id, text="❌ زبان مقصد ناشناخته است. مثلاً: فارسی، انگلیسی، فرانسوی")
+                return
+            user_input_state[chat_id]["destination_lang"] = language_map[lang_input]
+            user_input_state[chat_id]["awaiting"] = "text_to_translate"
+            await client.send_message(chat_id, text="📝 متنی که می‌خواهید ترجمه شود را وارد کنید:")
+            return
+
+        elif await_state == "text_to_translate":
+            origin = user_input_state[chat_id]["origin_lang"]
+            dest = user_input_state[chat_id]["destination_lang"]
+            text = message.content
+            try:
+                translated = GoogleTranslator(source=origin, target=dest).translate(text)
+                await client.send_message(chat_id, text=f"✅ ترجمه:\n\n{translated}")
+            except Exception as e:
+                await client.send_message(chat_id, text=f"❌ خطا در ترجمه: {str(e)}")
+            finally:
+                del user_input_state[chat_id]
+            return
+
 
     elif message.content == "/keyboard":
         first_name = message.from_user.first_name if message.from_user and message.from_user.first_name else "کاربر"
