@@ -1,17 +1,33 @@
-from bale import Bot, CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton, MenuKeyboardMarkup, MenuKeyboardButton, InputFile
+from bale import Bot, CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
 import chess
 import chess.engine
 import os
-from PyPDF2 import PdfReader, PdfWriter
+from PyPDF2 import PdfReader
 from pathlib import Path
 import arabic_reshaper
+from bidi.algorithm import get_display
 import re
 import requests
 import shutil
-import random
-from googletrans import Translator as GoogleTranslator
 from deep_translator import GoogleTranslator
+import json
+import urllib.parse
+from typing import Dict, Any
+import yt_dlp
+from urllib.parse import urlparse
+from bs4 import BeautifulSoup
+import aiohttp
+import asyncio
 
+STOCKFISH_PATH = r"C:\Users\Lenovo\Documents\Pajoheshi\stockfish-windows-x86-64-avx2 copy.exe"
+ELO_LEVELS = {
+    "2500+": {"skill_level": 20, "time_limit": 2.0},
+    "2500-2000": {"skill_level": 18, "time_limit": 1.5},
+    "2000-1500": {"skill_level": 15, "time_limit": 1.0},
+    "1500-1000": {"skill_level": 10, "time_limit": 0.7},
+    "1000-500": {"skill_level": 5, "time_limit": 0.4},
+    "500-": {"skill_level": 1, "time_limit": 0.2}
+}
 
 language_map = {
     "انگلیسی": "en",
@@ -27,52 +43,136 @@ language_map = {
     "ایتالیایی": "it"
 }
 
-difficulty_levels = {
-    "very_easy": {"elo": "<500", "skill": 0, "depth": 4},
-    "easy": {"elo": "500-1000", "skill": 2, "depth": 6},
-    "medium": {"elo": "1000-1500", "skill": 5, "depth": 8},
-    "intermediate": {"elo": "1500-2000", "skill": 10, "depth": 12},
-    "hard": {"elo": "2000-2500", "skill": 15, "depth": 16},
-    "very_hard": {"elo": ">2500", "skill": 20, "depth": 20}
-}
-
-STOCKFISH_PATH = r"C:\Users\Lenovo\Documents\Pajoheshi\stockfish-windows-x86-64-avx2 copy.exe"
 client = Bot(token="1073138097:49XMJIzGSAXXffU4p5hFbiDQB6NLp7RCxqdDpPeW")
 user_input_state = {}
 
-def docx_to_pdf(docx_path, pdf_path):
-    """ تبدیل DOCX به PDF"""
-    document = Document(docx_path)
-    pdf = canvas.Canvas(pdf_path)
+async def get_tehran_air_quality(url="https://airnow.tehran.ir"):
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                data = await response.text()
+                soup = BeautifulSoup(data, "html5lib")
 
-    y = 800
-    for i, paragraph in enumerate(document.paragraphs):
-        text = reshape_text_if_persian(paragraph.text)
-        pdf.drawString(100, y - 15 * i, text)
+                result = {
+                    "success": True,
+                    "24h_AQI": None,
+                    "now_AQI": None,
+                    "status": "ok"
+                }
 
-    pdf.save()
-    print(f" تبدیل {docx_path} به {pdf_path}")
+                aqi_24h = soup.find("span", {"id": "ContentPlaceHolder1_lblAqi24h"})
+                aqi_now = soup.find("span", {"id": "ContentPlaceHolder1_lblAqi3h"})
+
+                if aqi_24h:
+                    result["24h_AQI"] = aqi_24h.get_text(strip=True)
+                if aqi_now:
+                    result["now_AQI"] = aqi_now.get_text(strip=True)
+
+                return result
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "24h_AQI": None,
+            "now_AQI": None
+        }
 
 def is_persian(text):
-    """ بررسی اینکه آیا متن شامل کاراکترهای فارسی است"""
     return bool(re.search(r'[\u0600-\u06FF]', text))
 
 def reshape_text_if_persian(text):
-    """ بازشکل‌دهی متن اگر به فارسی است"""
     if is_persian(text):
         reshaped_text = arabic_reshaper.reshape(text)
         return get_display(reshaped_text)
     return text
 
-def display_board(board):
-    """ دریافت و ذخیره تصویر صفحه شطرنج"""
-    import urllib.parse
+def pdf_to_docx(pdf_path, docx_path):
+    """تبدیل PDF به DOCX به صورت محلی"""
+    try:
+        reader = PdfReader(pdf_path)
+        if len(reader.pages) == 0:
+            raise ValueError("فایل PDF خالی است یا قابل خواندن نیست")
 
+        document = Document()
+
+        for page in reader.pages:
+            text = page.extract_text()
+            if text:
+                text = reshape_text_if_persian(text)
+                document.add_paragraph(text)
+
+        document.save(docx_path)
+        print(f"تبدیل شد {pdf_path} به {docx_path}")
+
+    except Exception as e:
+        if os.path.exists(docx_path):
+            os.remove(docx_path)
+        raise e
+
+async def pdf_to_docx_with_api(pdf_path: str, output_path: str, api_key: str):
+    """تبدیل PDF به DOCX با استفاده از CloudConvert API"""
+    url = "https://api.cloudconvert.com/v2/convert"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "tasks": {
+            "import": {
+                "operation": "import/upload"
+            },
+            "convert": {
+                "operation": "convert",
+                "input": ["import"],
+                "output_format": "docx",
+                "engine": "libreoffice"
+            },
+            "export": {
+                "operation": "export/url",
+                "input": ["convert"]
+            }
+        }
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, headers=headers) as response:
+            if response.status != 200:
+                raise Exception(f"خطا در ایجاد کار تبدیل: {await response.text()}")
+
+            job_data = await response.json()
+            upload_url = job_data['data']['tasks'][0]['result']['form']['url']
+            job_id = job_data['data']['id']
+
+        with open(pdf_path, 'rb') as f:
+            files = {'file': f}
+            async with session.post(upload_url, data=files) as upload_response:
+                if upload_response.status != 204:
+                    raise Exception("خطا در آپلود فایل PDF")
+
+        export_url = None
+        while True:
+            await asyncio.sleep(2)
+            async with session.get(f"https://api.cloudconvert.com/v2/jobs/{job_id}", headers=headers) as status_response:
+                status_data = await status_response.json()
+                if status_data['data']['status'] == 'finished':
+                    export_url = status_data['data']['tasks'][2]['result']['files'][0]['url']
+                    break
+                elif status_data['data']['status'] in ('error', 'cancelled'):
+                    raise Exception("خطا در فرآیند تبدیل")
+
+        async with session.get(export_url) as download_response:
+            if download_response.status == 200:
+                with open(output_path, 'wb') as f:
+                    f.write(await download_response.read())
+            else:
+                raise Exception("خطا در دانلود فایل تبدیل شده")
+
+def display_board(board):
+    """تولید تصویر صفحه شطرنج"""
     fen = board.fen()
     fen_encoded = urllib.parse.quote(fen, safe='')
     url = f"https://lichess1.org/export/fen.gif?fen={fen_encoded}&color=white"
-
-    print(" Generated URL:", url)
 
     file_name = f"chess_board_{hash(fen)}.jpg"
     file_path = os.path.join("chess_boards", file_name)
@@ -85,151 +185,375 @@ def display_board(board):
         if res.status_code == 200:
             with open(file_path, 'wb') as f:
                 shutil.copyfileobj(res.raw, f)
-            print("✅ تصویر با موفقیت ذخیره شد:", file_path)
         else:
-            print(f"❌ خطا در دریافت تصویر: {res.status_code}, {res.text}")
             return None
 
     return file_path
 
-async def play_chess(chat_id, color):
-    """♟️ بازی شطرنج با کاربر"""
+async def download_youtube_video(url: str, chat_id: int):
+    """دانلود ویدیو از یوتیوب"""
+    try:
+        ydl_opts = {
+            'format': 'best',
+            'outtmpl': 'downloads/%(title)s.%(ext)s',
+            'quiet': True,
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            title = info.get('title', 'video')
+            duration = info.get('duration', 0)
+
+            if duration > 600:
+                await client.send_message(
+                    chat_id,
+                    "❌ ویدیوهای طولانی‌تر از 10 دقیقه پشتیبانی نمی‌شوند."
+                )
+                return
+
+            await client.send_message(
+                chat_id,
+                f"⏳ در حال دانلود ویدیو: {title}\n"
+                f"⏱️ مدت زمان: {duration//60}:{duration%60:02d}"
+            )
+
+            ydl.download([url])
+
+            file_path = ydl.prepare_filename(info)
+            file_size = os.path.getsize(file_path) / (1024 * 1024)
+
+            if file_size > 50:
+                await client.send_message(
+                    chat_id,
+                    "❌ حجم ویدیو بیش از حد مجاز است (حداکثر 50MB)."
+                )
+                os.remove(file_path)
+                return
+
+            with open(file_path, 'rb') as f:
+                video_data = f.read()
+                await client.send_document(
+                    chat_id=chat_id,
+                    document=InputFile(video_data)
+                )
+
+            os.remove(file_path)
+
+    except Exception as e:
+        await client.send_message(
+            chat_id,
+            f"❌ خطا در دانلود ویدیو: {str(e)}"
+        )
+async def play_chess(chat_id: int, color: str, elo_level: str):
+    """شروع بازی شطرنج با سطح مشخص"""
     if not os.path.exists(STOCKFISH_PATH):
-        await client.send_message(chat_id=chat_id, text="❌ موتور Stockfish یافت نشد! لطفاً مسیر را بررسی کنید.")
+        await client.send_message(chat_id, "❌ موتور Stockfish یافت نشد!")
         return
 
+    level_settings = ELO_LEVELS.get(elo_level, ELO_LEVELS["1500-1000"])
     board = chess.Board()
-    user_input_state[chat_id] = {"board": board, "color": color}
+
+    level_names = {
+        "2500+": "حرفه‌ای (2500+)",
+        "2500-2000": "پیشرفته (2000-2500)",
+        "2000-1500": "متوسط (1500-2000)",
+        "1500-1000": "مبتدی+ (1000-1500)",
+        "1000-500": "مبتدی (500-1000)",
+        "500-": "تازه‌کار (زیر 500)"
+    }
+
+    user_input_state[chat_id] = {
+        "board": board,
+        "color": color,
+        "elo_level": elo_level,
+        "awaiting_move": True,
+        "engine_settings": level_settings
+    }
 
     file_path = display_board(board)
+    if not file_path:
+        await client.send_message(chat_id, "❌ خطا در ایجاد صفحه شطرنج")
+        return
 
+    if color == "black":
+        await make_engine_move(chat_id, board, level_settings)
+    else:
+        with open(file_path, "rb") as f:
+            await client.send_photo(chat_id, InputFile(f.read()))
+        os.remove(file_path)
+        await client.send_message(
+            chat_id,
+            f"♟️ شروع بازی - سطح {level_names[elo_level]}\n"
+            f"♔ شما سفید هستید! لطفاً حرکت خود را وارد کنید\n"
+            f"مثال: e4, Nf3, Qxf7"
+        )
+
+async def make_engine_move(chat_id: int, board: chess.Board, settings: Dict[str, Any]):
+    """انجام حرکت توسط موتور شطرنج"""
     try:
         with chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH) as engine:
-            if color == "black":
-                result = engine.play(board, chess.engine.Limit(time=1.0))
-                board.push(result.move)
+            engine.configure({"Skill Level": settings["skill_level"]})
 
+            result = engine.play(
+                board,
+                chess.engine.Limit(time=settings["time_limit"])
+            )
+
+            if result.move:
+                board.push(result.move)
                 file_path = display_board(board)
 
-                await client.send_message(chat_id=chat_id, text="♟️ **Stockfish بازی را شروع کرد!**")
-                with open(file_path, "rb") as test:
-                    file = InputFile(test.read())
-                    await client.send_photo(chat_id, file)
+                if file_path:
+                    with open(file_path, "rb") as f:
+                        await client.send_photo(chat_id, InputFile(f.read()))
                     os.remove(file_path)
-                await client.send_message(chat_id=chat_id, text="♔ **نوبت شما! حرکت خود را ارسال کنید.**")
+
+                if board.is_game_over():
+                    await handle_game_over(chat_id, board)
+                else:
+                    level_names = {
+                        20: "حرفه‌ای", 18: "پیشرفته", 15: "متوسط",
+                        10: "مبتدی+", 5: "مبتدی", 1: "تازه‌کار"
+                    }
+                    await client.send_message(
+                        chat_id,
+                        f"♟️ Stockfish (سطح {level_names[settings['skill_level']]}) حرکت کرد!\n"
+                        f"♔ نوبت شما! حرکت خود را ارسال کنید"
+                    )
             else:
-                await client.send_message(chat_id=chat_id, text="♔ **شما سفید هستید! بازی را شروع کنید.**")
-                with open(file_path, "rb") as test:
-                    file = InputFile(test.read())
-                    await client.send_photo(chat_id, file)
-                os.remove(file_path)
-            user_input_state[chat_id]["awaiting_move"] = True
+                await client.send_message(chat_id, "❌ موتور شطرنج نتوانست حرکتی انجام دهد")
 
-    except PermissionError:
-        await client.send_message(chat_id=chat_id, text="❌ خطای دسترسی: لطفاً مجوزهای اجرای Stockfish را بررسی کنید.")
     except Exception as e:
-        await client.send_message(chat_id=chat_id, text=f"❌ خطای غیرمنتظره: {e}")
+        await client.send_message(chat_id, f"❌ خطا در موتور شطرنج: {str(e)}")
+        del user_input_state[chat_id]
 
+async def handle_game_over(chat_id: int, board: chess.Board):
+    """پردازش پایان بازی"""
+    result = board.result()
+    if result == "1-0":
+        message = "🏁 بازی تمام شد! شما برنده شدید! 🎉"
+    elif result == "0-1":
+        message = "🏁 بازی تمام شد! Stockfish برنده شد! 🤖"
+    else:
+        message = "🏁 بازی تمام شد! نتیجه مساوی بود! ⚖️"
+
+    await client.send_message(chat_id, message)
+    del user_input_state[chat_id]
+
+async def process_document(chat_id, file_path, file_name):
+    """دریافت فایل، پردازش و ارسال فایل تغییر یافته"""
+    try:
+        if not file_name.lower().endswith(".pdf"):
+            raise ValueError("فقط فایل‌های PDF پشتیبانی می‌شوند")
+
+        file_size = os.path.getsize(file_path) / (1024 * 1024)
+        if file_size > 20:
+            raise ValueError("حجم فایل نباید بیشتر از 20MB باشد")
+
+        output_path = file_path.replace(".pdf", ".docx")
+
+        await client.send_message(
+            chat_id=chat_id,
+            text="⏳ در حال تبدیل فایل PDF به DOCX... لطفاً صبر کنید"
+        )
+
+        try:
+            api_key = os.getenv("CLOUDCONVERT_API_KEY", "your_api_key_here")
+            await pdf_to_docx_with_api(file_path, output_path, api_key)
+        except Exception as api_error:
+            print(f"استفاده از API با خطا مواجه شد: {api_error}. استفاده از روش محلی...")
+            pdf_to_docx(file_path, output_path)
+
+        with open(output_path, 'rb') as f:
+            await client.send_document(
+                chat_id=chat_id,
+                document=InputFile(f.read(), filename=os.path.basename(output_path))
+            )
+
+        os.remove(file_path)
+        os.remove(output_path)
+
+    except Exception as e:
+        error_msg = f"❌ خطا در پردازش فایل: {str(e)}"
+        if "PDF" in str(e):
+            error_msg = "❌ فایل PDF معتبر نیست یا آسیب دیده است"
+
+        await client.send_message(
+            chat_id=chat_id,
+            text=error_msg
+        )
+
+        for path in [file_path, file_path.replace(".pdf", ".docx")]:
+            if os.path.exists(path):os.remove(path)
 
 @client.event
 async def on_message(message: Message):
     chat_id = message.chat.id
 
-    if not hasattr(message, "content") or message.content is None:
-        await client.send_message(chat_id, text="❌ پیام نامعتبر است.")
+    with open("اسامی اشخاص ربات.txt", "a+", encoding="utf-8") as f:
+        f.seek(0)
+        ids = f.read().splitlines()
+        if str(chat_id) not in ids:
+            f.write(f"{chat_id}\n")
+
+    if not message or (not message.text and not message.document):
+        await message.reply("❌ پیام نامعتبر است.")
         return
 
-    content = message.content.strip()
-    if content == "/start":
-        await handle_start_command(message)
-        return
-
-
-    if not hasattr(message, "content") or message.content is None:
-        await client.send_message(chat_id, text="❌ پیام نامعتبر است.")
-        return
-
-    if chat_id in user_input_state:
-        state = user_input_state[chat_id]
+    if message.content == "/stop":
         if chat_id in user_input_state:
-            state = user_input_state[chat_id]
+            del user_input_state[chat_id]
+            await client.send_message(
+                chat_id,
+                "✅ تمام عملیات‌های در حال انجام متوقف شدند.\n"
+                "شما می‌توانید دوباره از منوی اصلی شروع کنید."
+            )
+        else:
+            await client.send_message(
+                chat_id,
+                "⚠️ هیچ عملیاتی در حال انجام نیست که نیاز به توقف داشته باشد."
+            )
+        return
 
-        if state.get("awaiting_move"):
-            board = state.get("board")
-            if not board:
-                await client.send_message(chat_id, text="❌ خطا در وضعیت بازی.")
-                return
-            try:
-                move = board.parse_san(message.content.strip())
-                if board.is_legal(move):
-                    board.push(move)
-                else:
-                    await client.send_message(chat_id, text="❌ حرکت نامعتبر. دوباره امتحان کنید.")
-                    return
-            except ValueError:
-                await client.send_message(chat_id, text="❌ فرمت حرکت اشتباهه. مثلاً: `e4` یا `Nf3`")
-                return
+    if chat_id in user_input_state and user_input_state[chat_id].get("awaiting_move"):
+        board = user_input_state[chat_id].get("board")
+        settings = user_input_state[chat_id].get("engine_settings")
 
-            with chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH) as engine:
+        try:
+            move = board.parse_san(message.content.strip())
+            if board.is_legal(move):
+                board.push(move)
+
                 if board.is_game_over():
-                    await client.send_message(chat_id, text=f"🏁 بازی تمام شد! نتیجه: {board.result()}")
-                    del user_input_state[chat_id]
-                    return
-
-                result = engine.play(board, chess.engine.Limit(time=1.0))
-                board.push(result.move)
-
-            if board.is_game_over():
-                await client.send_message(chat_id, text=f"🏁 بازی تمام شد! نتیجه: {board.result()}")
-                del user_input_state[chat_id]
+                    await handle_game_over(chat_id, board)
+                else:
+                    await make_engine_move(chat_id, board, settings)
             else:
-                image_path = display_board(board)
-                await client.send_message(chat_id, text="♟️ **Stockfish حرکت کرد!**")
-                with open(image_path, "rb") as f:
-                    await client.send_photo(chat_id, InputFile(f.read()))
-                os.remove(image_path)
-                await client.send_message(chat_id, text="♔ **نوبت شماست!**")
-            return
+                await client.send_message(
+                    chat_id,
+                    "❌ حرکت نامعتبر! لطفاً حرکت صحیحی وارد کنید.\n"
+                    "مثال‌های صحیح: e4, Nf3, Qxf7"
+                )
+
+        except ValueError:
+            await client.send_message(
+                chat_id,
+                "❌ فرمت حرکت اشتباه است!\n"
+                "لطفاً حرکت را به صورت استاندارد شطرنج وارد کنید.\n"
+                "مثال‌های صحیح: e4, Nf3, Qxf7"
+            )
+        return
+
+    if message.text and ("youtube.com" in message.text or "youtu.be" in message.text):
+        await download_youtube_video(message.text, chat_id)
+        return
 
     if message.document:
-        file = message.document
-
-        if not file.file_name:
-            await client.send_message(chat_id, text="❌ فایل نامعتبر است.")
-            return
-
-        file_path = f'./{file.file_name}'
-        try:
-            await file.download(file_path)
-        except Exception as e:
-            await client.send_message(chat_id, text=f"❌ خطا در دانلود فایل: {str(e)}")
-            return
-
-        await process_document(chat_id, file_path, file.file_name)
+        doc = message.document
+        if doc.file_name and doc.file_name.endswith('.pdf'):
+            try:
+                file_content = await client.download_file(doc.file_id)
+                file_path = f"./{doc.file_name}"
+                with open(file_path, "wb") as f:
+                    f.write(file_content)
+                await process_document(message.chat.id, file_path, doc.file_name)
+            except Exception as e:
+                await message.reply(
+                    f"❌ خطا در پردازش فایل: {e}\n"
+                    "لطفاً فایل PDF معتبری ارسال کنید."
+                )
+        else:
+            await message.reply(
+                "❌ لطفاً فقط فایل PDF ارسال کنید.\n"
+                "فرمت‌های دیگر پشتیبانی نمی‌شوند."
+            )
+        return  
 
     if message.content == "/start":
         await handle_start_command(message)
-
-    elif message.content == "ChatGPT":
+    elif message.content.lower() == "chatgpt":
         user_input_state[chat_id] = {"awaiting": "chatgpt"}
-        await client.send_message(chat_id=chat_id, text="سلام. چه کمکی می‌تونم بهتون بکنم؟")
+        await client.send_message(
+            chat_id=chat_id,
+            text="🤖 حالت ChatGPT فعال شد!\n"
+            "لطفاً سوال یا متن خود را ارسال کنید:"
+        )
     elif chat_id in user_input_state and user_input_state[chat_id].get("awaiting") == "chatgpt":
+        user_input = message.content
         try:
-            user_input = message.content
-            url = "https://open.wiki-api.ir/apis-1/ChatGPT?q="
-            response = requests.get(url + user_input)
+            response = requests.post(
+                url="https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": "Bearer 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",
+                    "Content-Type": "application/json",
+                },
+                data=json.dumps({
+                    "model": "meta-llama/llama-4-maverick:free",
+                    "messages": [{"role": "user", "content": user_input}],
+                })
+            )
 
             if response.status_code == 200:
                 data = response.json()
-                if "results" in data:
-                    await client.send_message(chat_id, text=f"پاسخ از ChatGPT: {data['results']} ")
-                else:
-                    await client.send_message(chat_id, text="❌ نتیجه‌ای از API دریافت نشد.")
+                content = data["choices"][0]["message"]["content"]
+                await client.send_message(
+                    chat_id,
+                    text=f"🤖 پاسخ ChatGPT:\n\n{content}"
+                )
             else:
-                await client.send_message(chat_id, text=f"❌ خطا در دریافت پاسخ از API: {response.status_code}")
+                await client.send_message(
+                    chat_id,
+                    text=f"❌ خطا در دریافت پاسخ: {response.status_code}\n"
+                )
+
         except Exception as e:
-            await client.send_message(chat_id, text=f"❌ خطای غیرمنتظره در ChatGPT: {e}")
-        del user_input_state[chat_id]
+            await client.send_message(
+                chat_id,
+                text=f"❌ خطای غیرمنتظره: {e}\n"
+                "لطفاً دوباره امتحان کنید."
+            )
+        finally:
+            del user_input_state[chat_id]
+        return
+
+    if chat_id in user_input_state and user_input_state[chat_id].get("awaiting") == "humanizeai":
+        text = message.content.strip()
+        try:
+            api_url = "https://api.humanizeai.pro/v1/humanize"
+            api_key = "sk_o391poseytq84nt71t9g"
+
+            payload = {"text": text, "language": "fa"}
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+
+            response = requests.post(api_url, json=payload, headers=headers)
+
+            if response.status_code == 200:
+                result = response.json()
+                humanized_text = result.get('humanizedText', "متن پردازش شده یافت نشد.")
+                await client.send_message(
+                    chat_id,
+                    text=f"✍️ متن پردازش شده:\n\n{humanized_text}\n\n"
+                    "✅ متن شما با موفقیت بازنویسی شد."
+                )
+            else:
+                await client.send_message(
+                    chat_id,
+                    text=f"❌ خطا در بازنویسی متن: {response.status_code}\n"
+                    "لطفاً دوباره امتحان کنید."
+                )
+
+        except Exception as e:
+            await client.send_message(
+                chat_id,
+                text=f"❌ خطای غیرمنتظره: {e}\n"
+                "سرویس در حال حاضر در دسترس نیست."
+            )
+        finally:
+            del user_input_state[chat_id]
+        return
 
     if chat_id in user_input_state:
         await_state = user_input_state[chat_id].get("awaiting")
@@ -237,21 +561,39 @@ async def on_message(message: Message):
         if await_state == "origin":
             lang_input = message.content.strip()
             if lang_input not in language_map:
-                await client.send_message(chat_id, text="❌ زبان مبدأ ناشناخته است. مثلاً: فارسی، انگلیسی، فرانسوی")
+                await client.send_message(
+                    chat_id,
+                    text="❌ زبان مبدأ ناشناخته است!\n"
+                    "لطفاً یکی از زبان‌های زیر را انتخاب کنید:\n"
+                    "فارسی, انگلیسی, فرانسوی, آلمانی, ترکی, عربی, چینی, ژاپنی, روسی, اسپانیایی, ایتالیایی"
+                )
                 return
             user_input_state[chat_id]["origin_lang"] = language_map[lang_input]
             user_input_state[chat_id]["awaiting"] = "destination"
-            await client.send_message(chat_id, text="✅ حالا زبان مقصد را وارد کنید:")
+            await client.send_message(
+                chat_id,
+                text=f"✅ زبان مبدأ: {lang_input}\n"
+                "لطفاً زبان مقصد را انتخاب کنید:"
+            )
             return
 
         elif await_state == "destination":
             lang_input = message.content.strip()
             if lang_input not in language_map:
-                await client.send_message(chat_id, text="❌ زبان مقصد ناشناخته است. مثلاً: فارسی، انگلیسی، فرانسوی")
+                await client.send_message(
+                    chat_id,
+                    text="❌ زبان مقصد ناشناخته است!\n"
+                    "لطفاً یکی از زبان‌های زیر را انتخاب کنید:\n"
+                    "فارسی, انگلیسی, فرانسوی, آلمانی, ترکی, عربی, چینی, ژاپنی, روسی, اسپانیایی, ایتالیایی"
+                )
                 return
             user_input_state[chat_id]["destination_lang"] = language_map[lang_input]
             user_input_state[chat_id]["awaiting"] = "text_to_translate"
-            await client.send_message(chat_id, text="📝 متنی که می‌خواهید ترجمه شود را وارد کنید:")
+            await client.send_message(
+                chat_id,
+                text=f"✅ ترجمه از {user_input_state[chat_id]['origin_lang']} به {user_input_state[chat_id]['destination_lang']}\n"
+                "لطفاً متنی که می‌خواهید ترجمه شود را وارد کنید:"
+            )
             return
 
         elif await_state == "text_to_translate":
@@ -260,47 +602,20 @@ async def on_message(message: Message):
             text = message.content
             try:
                 translated = GoogleTranslator(source=origin, target=dest).translate(text)
-                await client.send_message(chat_id, text=f"✅ ترجمه:\n\n{translated}")
+                await client.send_message(
+                    chat_id,
+                    text=f"🌐 ترجمه:\n\n{translated}\n\n"
+                    f"✅ متن از {origin} به {dest} ترجمه شد."
+                )
             except Exception as e:
-                await client.send_message(chat_id, text=f"❌ خطا در ترجمه: {str(e)}")
+                await client.send_message(
+                    chat_id,
+                    text=f"❌ خطا در ترجمه: {str(e)}\n"
+                    "لطفاً دوباره امتحان کنید."
+                )
             finally:
                 del user_input_state[chat_id]
             return
-
-
-    elif message.content == "/keyboard":
-        first_name = message.from_user.first_name if message.from_user and message.from_user.first_name else "کاربر"
-        await client.send_message(chat_id, text=f"*سلام {first_name}, به IntelliBot خوش آمدید*",
-                                    components=MenuKeyboardMarkup()
-                                    .add(MenuKeyboardButton(' ترجمه'))
-                                    .add(MenuKeyboardButton(' pdf docx')))
-
-    else:
-        await client.send_message(chat_id, text=f"شما گفتید: {message.content}")
-
-    print(" پیام دریافت شد")
-
-async def process_document(chat_id, file_path, file_name):
-    """ دریافت فایل، پردازش و ارسال فایل تغییر یافته"""
-
-    output_path = file_path.replace(".pdf", ".docx") if file_name.endswith(".pdf") else file_path.replace(".docx", ".pdf")
-
-    if file_name.endswith(".pdf"):
-        pdf_to_docx(file_path, output_path)
-    elif file_name.endswith(".docx"):
-        docx_to_pdf(file_path, output_path)
-    else:
-        await client.send_message(chat_id=chat_id, text="❌ فرمت فایل پشتیبانی نمی‌شود! فقط PDF و DOCX مجاز است.")
-        return
-
-    await client.send_document(chat_id=chat_id, document=InputFile(output_path))
-
-    os.remove(file_path)
-    os.remove(output_path)
-
-@client.event
-async def on_ready():
-    print(client.user, "آماده است! 🟢")
 
 @client.event
 async def on_callback(callback: CallbackQuery):
@@ -308,52 +623,155 @@ async def on_callback(callback: CallbackQuery):
 
     if callback.data == "chess":
         keyboard = InlineKeyboardMarkup()
-        keyboard.add(InlineKeyboardButton(text="⚪ سفید", callback_data="chess_white"))
-        keyboard.add(InlineKeyboardButton(text="⚫ سیاه", callback_data="chess_black"))
-        await client.send_message(chat_id=chat_id, text="با چه رنگی می‌خواهید بازی کنید؟", components=keyboard)
-        return
+        keyboard.add(InlineKeyboardButton(" رادین (2500+)", callback_data="chess_level_2500+"), row=1)
+        keyboard.add(InlineKeyboardButton("سطح پیشرفته (2000-2500)", callback_data="chess_level_2500-2000"), row=2)
+        keyboard.add(InlineKeyboardButton("سطح متوسط (1500-2000)", callback_data="chess_level_2000-1500"), row=3)
+        keyboard.add(InlineKeyboardButton("سطح مبتدی+ (1000-1500)", callback_data="chess_level_1500-1000"), row=4)
+        keyboard.add(InlineKeyboardButton("سطح مبتدی (500-1000)", callback_data="chess_level_1000-500"), row=5)
+        keyboard.add(InlineKeyboardButton("سطح تازه‌کار (زیر 500)", callback_data="chess_level_500-"), row=6)
 
-
-    if callback.data in ["chess_white", "chess_black"]:
-        user_input_state[chat_id] = {"color": "white" if "white" in callback.data else "black", "awaiting": "difficulty"}
-        await client.send_message(chat_id=chat_id, text="📊 لطفاً سطح سختی را انتخاب کنید:", components=InlineKeyboardMarkup()
-            .add(InlineKeyboardButton(text="🎯 <500", callback_data="difficulty_very_easy"))
-            .add(InlineKeyboardButton(text="🔰 500-1000", callback_data="difficulty_easy"))
-            .add(InlineKeyboardButton(text="⚖️ 1000-1500", callback_data="difficulty_medium"))
-            .add(InlineKeyboardButton(text="💡 1500-2000", callback_data="difficulty_intermediate"))
-            .add(InlineKeyboardButton(text="🔥 2000-2500", callback_data="difficulty_hard"))
-            .add(InlineKeyboardButton(text="🏆 >2500", callback_data="difficulty_very_hard"))
+        await client.send_message(
+            chat_id,
+            "♟️ لطفاً سطح مهارت خود در شطرنج را انتخاب کنید:",
+            components=keyboard
         )
 
-    elif callback.data.startswith("difficulty_"):
-        level = callback.data.replace("difficulty_", "")
-        user_input_state[chat_id]["difficulty"] = level
-        color = user_input_state[chat_id]["color"]
-        await play_chess(chat_id, color, level)
+    elif callback.data.startswith("chess_level_"):
+        elo_level = callback.data.replace("chess_level_", "")
+        keyboard = InlineKeyboardMarkup()
+        keyboard.add(InlineKeyboardButton("⚪ سفید (شما شروع می‌کنید)", callback_data=f"chess_color_white_{elo_level}"))
+        keyboard.add(InlineKeyboardButton("⚫ سیاه (کامپیوتر شروع می‌کند)", callback_data=f"chess_color_black_{elo_level}"))
 
-    elif callback.data == "chess_white":
-        await play_chess(chat_id, "white")
-    elif callback.data == "chess_black":
-        await play_chess(chat_id, "black")
+        level_names = {
+            "2500+": "حرفه‌ای (2500+)",
+            "2500-2000": "پیشرفته (2000-2500)",
+            "2000-1500": "متوسط (1500-2000)",
+            "1500-1000": "مبتدی+ (1000-1500)",
+            "1000-500": "مبتدی (500-1000)",
+            "500-": "تازه‌کار (زیر 500)"
+        }
+
+        await client.send_message(
+            chat_id,
+            f"♟️ سطح انتخاب شده: {level_names[elo_level]}\n"
+            "با چه رنگی می‌خواهید بازی کنید?",
+            components=keyboard
+        )
+
+    elif callback.data.startswith("chess_color_"):
+        parts = callback.data.split("_")
+        color = parts[2]
+        elo_level = "_".join(parts[3:])
+
+        level_names = {
+            "2500+": "حرفه‌ای",
+            "2500-2000": "پیشرفته",
+            "2000-1500": "متوسط",
+            "1500-1000": "مبتدی+",
+            "1000-500": "مبتدی",
+            "500-": "تازه‌کار"
+        }
+
+        await client.send_message(
+            chat_id,
+            f"♟️ شروع بازی شطرنج\n"
+            f"• سطح: {level_names[elo_level]}\n"
+            f"• رنگ شما: {'سفید ⚪' if color == 'white' else 'سیاه ⚫'}\n\n"
+            f"در حال آماده‌سازی بازی..."
+        )
+        await play_chess(chat_id, color, elo_level)
+
     elif callback.data == "translate_text":
         user_input_state[chat_id] = {"awaiting": "origin"}
-        await client.send_message(chat_id=chat_id, text=" لطفاً زبان مبدأ را وارد کنید:")
+        await client.send_message(
+            chat_id=chat_id,
+            text="🌐 لطفاً زبان مبدأ را انتخاب کنید:\n"
+            "فارسی, انگلیسی, فرانسوی, آلمانی, ترکی, عربی, چینی, ژاپنی, روسی, اسپانیایی, ایتالیایی"
+        )
+
     elif callback.data == "chatgpt":
         user_input_state[chat_id] = {"awaiting": "chatgpt"}
-        await client.send_message(chat_id=chat_id, text="سلام. چه کمکی می‌تونم بهتون بکنم؟")
+        await client.send_message(
+            chat_id=chat_id,
+            text="🤖 حالت ChatGPT فعال شد!\n"
+            "لطفاً سوال یا متن خود را ارسال کنید:"
+        )
+
+    elif callback.data == "pollution_tehran":
+        try:
+            air_quality = await get_tehran_air_quality()
+
+            if air_quality["success"]:
+                message = (
+                    f"🏙️ **وضعیت کیفیت هوای تهران**\n\n"
+                    f"🔢 شاخص آلودگی هوا در 24 ساعت گذشته: **{air_quality['24h_AQI'] or 'نامعلوم'}**\n"
+                    f"🔢 شاخص آلودگی هوا در حال حاضر: **{air_quality['now_AQI'] or 'نامعلوم'}**\n\n"
+                    f"⚠️ توجه: اطلاعات ممکن است با تاخیر به روز رسانی شوند"
+                )
+
+                await client.send_message(chat_id=chat_id, text=message)
+            else:
+                await client.send_message(
+                    chat_id=chat_id,
+                    text=f"❌ خطا در دریافت اطلاعات کیفیت هوا:\n{air_quality.get('error', 'خطای نامشخص')}\n\n"
+                    "لطفاً بعداً تلاش کنید."
+                )
+        except Exception as e:
+            await client.send_message(
+                chat_id=chat_id,
+                text=f"❌ خطای سیستمی: {str(e)}\n"
+                "لطفاً بعداً تلاش کنید."
+            )
+
+    elif callback.data == "humanizeai":
+        user_input_state[chat_id] = {"awaiting": "humanizeai"}
+        await client.send_message(
+            chat_id=chat_id,
+            text="✍️ لطفاً متنی که می‌خواهید پردازش شود را وارد کنید:\n"
+            "(این سرویس متن شما را به زبان طبیعی و انسانی تبدیل می‌کند)"
+        )
+
+    elif callback.data == "pdf_to_docx":
+        user_input_state[chat_id] = {"awaiting": "waiting_pdf"}
+        await client.send_message(
+            chat_id,
+            "📎 لطفاً فایل PDF خود را برای تبدیل به DOCX ارسال کنید:\n"
+            "• حداکثر حجم فایل: 20MB\n"
+            "• پس از تبدیل، فایل Word برای شما ارسال خواهد شد"
+        )
+
+    elif callback.data == "youtube_downloader":
+        user_input_state[chat_id] = {"awaiting": "youtube_url"}
+        await client.send_message(
+            chat_id,
+            "🎬 لطفاً لینک ویدیوی یوتیوب را ارسال کنید:\n"
+            "• حداکثر مدت ویدیو: 10 دقیقه\n"
+            "• حداکثر حجم: 50MB\n"
+            "• پس از دانلود، فایل برای شما ارسال خواهد شد"
+        )
 
 async def handle_start_command(message: Message):
     """مدیریت دستور /start."""
     chat_id = message.chat.id
     reply_markup = InlineKeyboardMarkup()
-    reply_markup.add(InlineKeyboardButton(text=" تبدیل PDF به DOCX", callback_data="pdf_to_docx"), row=1)
-    reply_markup.add(InlineKeyboardButton(text=" ترجمه متن", callback_data="translate_text"), row=2)
+    reply_markup.add(InlineKeyboardButton(text="🔀 تبدیل PDF به DOCX", callback_data="pdf_to_docx"), row=1)
+    reply_markup.add(InlineKeyboardButton(text="🌐 ترجمه متن", callback_data="translate_text"), row=2)
     reply_markup.add(InlineKeyboardButton(text="♟️ بازی شطرنج", callback_data="chess"), row=3)
-    reply_markup.add(InlineKeyboardButton(text=" دانلود ویدئو یوتیوب", callback_data="download_youtube"), row=4)
-    reply_markup.add(InlineKeyboardButton(text=" تبدیل صدا به متن", callback_data="audio_to_text"), row=5)
-    reply_markup.add(InlineKeyboardButton(text=" ChatGPT", callback_data="chatgpt"), row=6)
+    reply_markup.add(InlineKeyboardButton(text="🤖 ChatGPT", callback_data="chatgpt"), row=4)
+    reply_markup.add(InlineKeyboardButton(text="🏙️ کیفیت هوای تهران", callback_data="pollution_tehran"), row=5)
+    reply_markup.add(InlineKeyboardButton(text="✍️ Humanize AI", callback_data="humanizeai"), row=6)
+    reply_markup.add(InlineKeyboardButton(text="🎬 دانلود از یوتیوب", callback_data="youtube_downloader"), row=7)
 
     first_name = message.from_user.first_name if message.from_user and message.from_user.first_name else "کاربر"
-    await client.send_message(chat_id, text=f"*سلام {first_name}, به IntelliBot خوش آمدید*", components=reply_markup)
+    await client.send_message(
+        chat_id,
+        text=f"✨ سلام {first_name}، به ربات هوشمند خوش آمدید!\n\n"
+        "لطفاً یکی از گزینه‌های زیر را انتخاب کنید:",
+        components=reply_markup
+    )
+
+@client.event
+async def on_ready():
+    print(f"{client.user} آماده است! 🚀")
 
 client.run()
