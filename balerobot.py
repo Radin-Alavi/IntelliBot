@@ -19,7 +19,7 @@ from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 import aiohttp
 import asyncio
-
+import instaloader
 STOCKFISH_PATH = r"stockfish-windows-x86-64-avx2.exe"
 ELO_LEVELS = {
     "2500+": {"skill_level": 20, "time_limit": 2.0},
@@ -29,7 +29,7 @@ ELO_LEVELS = {
     "1000-500": {"skill_level": 5, "time_limit": 0.4},
     "500-": {"skill_level": 1, "time_limit": 0.2}
 }
-
+insta_loader = instaloader.Instaloader()
 language_map = {
     "انگلیسی": "en",
     "فارسی": "fa",
@@ -80,7 +80,7 @@ async def get_tehran_air_quality():
                 
                 return {
                     "success": True,
-                    "24h_AQI": "غیرفعال",  # این API میانگین 24h ارائه نمیدهد
+                    "24h_AQI": "غیرفعال",
                     "now_AQI": current_aqi,
                     "status": "ok"
                 }
@@ -114,9 +114,7 @@ def pdf_to_docx(pdf_path, docx_path):
     document.save(docx_path)
     print(f"تبدیل شد {pdf_path} به {docx_path}")
 
-
 def display_board(board):
-    """تولید تصویر صفحه شطرنج"""
     fen = board.fen()
     fen_encoded = urllib.parse.quote(fen, safe='')
     url = f"https://lichess1.org/export/fen.gif?fen={fen_encoded}&color=white"
@@ -138,7 +136,6 @@ def display_board(board):
     return file_path
 
 async def download_youtube_video(url: str, chat_id: int):
-    """دانلود ویدیو از یوتیوب"""
     try:
         ydl_opts = {
             'format': 'best',
@@ -192,8 +189,82 @@ async def download_youtube_video(url: str, chat_id: int):
             chat_id,
             f"❌ خطا در دانلود ویدیو: {str(e)}"
         )
+
+async def download_instagram_post(url: str, chat_id: int):
+    try:
+        # استخراج shortcode از URL
+        parsed_url = urlparse(url)
+        path_parts = parsed_url.path.strip('/').split('/')
+        if len(path_parts) < 2 or path_parts[1] != 'p':
+            await client.send_message(chat_id, "❌ لینک نامعتبر! لطفاً لینک پست را ارسال کنید.")
+            return
+
+        shortcode = path_parts[2]
+        
+        L = instaloader.Instaloader(
+            dirname_pattern="downloads/ig_{shortcode}",
+            save_metadata=False,
+            download_videos=True,
+            download_images=True,
+            download_comments=False
+        )
+
+        post = instaloader.Post.from_shortcode(L.context, shortcode)
+        
+        await client.send_message(chat_id, f"⏳ در حال دانلود پست از @{post.owner_username}...")
+        
+        # دانلود محتوا
+        L.download_post(post, target=f"ig_{shortcode}")
+        
+        # ارسال فایل‌ها
+        download_path = f"downloads/ig_{shortcode}"
+        media_sent = False
+        
+        for root, _, files in os.walk(download_path):
+            for file in files:
+                if file.endswith(('.mp4', '.jpg', '.jpeg', '.png')):
+                    file_path = os.path.join(root, file)
+                    try:
+                        with open(file_path, 'rb') as f:
+                            if file.endswith('.mp4'):
+                                await client.send_video(chat_id, InputFile(f.read()))
+                            else:
+                                await client.send_photo(chat_id, InputFile(f.read()))
+                            media_sent = True
+                    except Exception as e:
+                        print(f"Error sending media: {e}")
+        
+        if not media_sent:
+            await client.send_message(chat_id, "❌ محتوایی برای دانلود یافت نشد!")
+
+    except instaloader.exceptions.PrivateProfileNotFollowedException:
+        await client.send_message(chat_id, "❌ این پست خصوصی است و نیاز به لاگین دارد!")
+    except instaloader.exceptions.QueryReturnedBadRequestException:
+        await client.send_message(chat_id, "❌ لینک نامعتبر یا پست حذف شده است!")
+    except Exception as e:
+        await client.send_message(chat_id, f"❌ خطای ناشناخته: {str(e)}")
+    finally:
+        # پاکسازی فایل‌های موقت
+        if 'download_path' in locals() and os.path.exists(download_path):
+            shutil.rmtree(download_path)
+
+async def download_soundcloud_track(url: str, chat_id: int):
+    try:
+        dl = soundclouddl.SoundcloudDL()
+        info = dl.get_info(url)
+        
+        await client.send_message(chat_id, f"🎵 دانلود: {info['title']}")
+        dl.download(url, "downloads/sc_temp")
+        
+        file_path = f"downloads/sc_temp/{info['title']}.mp3"
+        with open(file_path, 'rb') as f:
+            await client.send_audio(chat_id, InputFile(f.read()))
+        
+        shutil.rmtree("downloads/sc_temp")
+    except Exception as e:
+        await client.send_message(chat_id, f"❌ خطا: {str(e)}")
+
 async def play_chess(chat_id: int, color: str, elo_level: str):
-    """شروع بازی شطرنج با سطح مشخص"""
     if not os.path.exists(STOCKFISH_PATH):
         await client.send_message(chat_id, "❌ موتور Stockfish یافت نشد!")
         return
@@ -237,7 +308,6 @@ async def play_chess(chat_id: int, color: str, elo_level: str):
         )
 
 async def make_engine_move(chat_id: int, board: chess.Board, settings: Dict[str, Any]):
-    """انجام حرکت توسط موتور شطرنج"""
     try:
         with chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH) as engine:
             engine.configure({"Skill Level": settings["skill_level"]})
@@ -276,7 +346,6 @@ async def make_engine_move(chat_id: int, board: chess.Board, settings: Dict[str,
         del user_input_state[chat_id]
 
 async def handle_game_over(chat_id: int, board: chess.Board):
-    """پردازش پایان بازی"""
     result = board.result()
     if result == "1-0":
         message = "🏁 بازی تمام شد! شما برنده شدید! 🎉"
@@ -289,7 +358,6 @@ async def handle_game_over(chat_id: int, board: chess.Board):
     del user_input_state[chat_id]
 
 async def process_document(chat_id, file_path, file_name):
-    """دریافت فایل، پردازش و ارسال فایل تغییر یافته"""
     try:
         if not file_name.lower().endswith(".pdf"):
             raise ValueError("فقط فایل‌های PDF پشتیبانی می‌شوند")
@@ -421,7 +489,7 @@ async def on_message(message: Message):
         user_input_state[chat_id] = {"awaiting": "chatgpt"}
         await client.send_message(
             chat_id=chat_id,
-            text="🤖 حالت ChatGPT فعال شد!\n"
+            text=
             "لطفاً سوال یا متن خود را ارسال کنید:"
         )
     elif chat_id in user_input_state and user_input_state[chat_id].get("awaiting") == "chatgpt":
@@ -430,11 +498,11 @@ async def on_message(message: Message):
             response = requests.post(
                 url="https://openrouter.ai/api/v1/chat/completions",
                 headers={
-                    "Authorization": "Bearer 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",
+                    "Authorization": "Bearer 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",
                     "Content-Type": "application/json",
                 },
                 data=json.dumps({
-                    "model": "meta-llama/llama-4-maverick:free",
+                    "model": "deepseek/deepseek-prover-v2:free",
                     "messages": [{"role": "user", "content": user_input}],
                 })
             )
@@ -444,7 +512,7 @@ async def on_message(message: Message):
                 content = data["choices"][0]["message"]["content"]
                 await client.send_message(
                     chat_id,
-                    text=f"🤖 پاسخ ChatGPT:\n\n{content}"
+                    text=f"{content}"
                 )
             else:
                 await client.send_message(
@@ -639,7 +707,7 @@ async def on_callback(callback: CallbackQuery):
         user_input_state[chat_id] = {"awaiting": "chatgpt"}
         await client.send_message(
             chat_id=chat_id,
-            text="🤖 حالت ChatGPT فعال شد!\n"
+            text=
             "لطفاً سوال یا متن خود را ارسال کنید:"
         )
 
@@ -672,7 +740,8 @@ async def on_callback(callback: CallbackQuery):
                 chat_id=chat_id,
                 text=f"❌ خطای سیستمی: {str(e)}"
             )
-    elif callback.data == "humanioutube eai":
+
+    elif callback.data == "humanizeai":
         user_input_state[chat_id] = {"awaiting": "humanizeai"}
         await client.send_message(
             chat_id=chat_id,
@@ -689,18 +758,38 @@ async def on_callback(callback: CallbackQuery):
             "• پس از تبدیل، فایل Word برای شما ارسال خواهد شد"
         )
 
-    elif callback.data == "youtube_downloader":
+    elif callback.data == "downloader_menu":
+        keyboard = InlineKeyboardMarkup()
+        keyboard.add(InlineKeyboardButton("یوتیوب", callback_data="download_youtube"),row = 1)
+        keyboard.add(InlineKeyboardButton("اینستاگرام", callback_data="download_instagram"), row = 2)
+        keyboard.add(InlineKeyboardButton("SoundCloud", callback_data="download_soundcloud"), row = 3)
+        #keyboard = InlineKeyboardMarkup()
+        #keyboard.add(InlineKeyboardButton("⚪ سفید (شما شروع می‌کنید)", callback_data=f"chess_color_white_{elo_level}"))
+        #keyboard.add(InlineKeyboardButton("⚫ سیاه (کامپیوتر شروع می‌کند)", callback_data=f"chess_color_black_{elo_level}"))
+        await client.send_message(
+            chat_id,
+            "📥 لطفا پلتفرم مورد نظر را انتخاب کنید:",
+            components=keyboard
+        )
+
+    elif callback.data == "download_youtube":
         user_input_state[chat_id] = {"awaiting": "youtube_url"}
         await client.send_message(
             chat_id,
-            "🎬 لطفاً لینک ویدیوی یوتیوب را ارسال کنید:\n"
-            "• حداکثر مدت ویدیو: 10 دقیقه\n"
-            "• حداکثر حجم: 50MB\n"
-            "• پس از دانلود، فایل برای شما ارسال خواهد شد"
+            "🎬 لطفا لینک یوتیوب را ارسال کنید:\n"
+            "• حداکثر مدت: 10 دقیقه\n"
+            "• حداکثر حجم: 500MB"
         )
 
+    elif callback.data == "download_instagram":
+        user_input_state[chat_id] = {"awaiting": "instagram"}
+        await client.send_message(chat_id, "📸 لینک اینستاگرام را ارسال کنید")
+    
+    elif callback.data == "download_soundcloud":
+        user_input_state[chat_id] = {"awaiting": "soundcloud"}
+        await client.send_message(chat_id, "🎧 لینک ساندکلاد را ارسال کنید")
+
 async def handle_start_command(message: Message):
-    """مدیریت دستور /start."""
     chat_id = message.chat.id
     reply_markup = InlineKeyboardMarkup()
     reply_markup.add(InlineKeyboardButton(text="🔀 تبدیل PDF به DOCX", callback_data="pdf_to_docx"), row=1)
@@ -708,8 +797,8 @@ async def handle_start_command(message: Message):
     reply_markup.add(InlineKeyboardButton(text="♟️ بازی شطرنج", callback_data="chess"), row=3)
     reply_markup.add(InlineKeyboardButton(text="🤖 ChatGPT", callback_data="chatgpt"), row=4)
     reply_markup.add(InlineKeyboardButton(text="🏙️ کیفیت هوای تهران", callback_data="pollution_tehran"), row=5)
-    reply_markup.add(InlineKeyboardButton(text="✍️ Humanize AI", callback_data="humanizeai"), row=6)
-    reply_markup.add(InlineKeyboardButton(text="🎬 دانلود از یوتیوب", callback_data="youtube_downloader"), row=7)
+    reply_markup.add(InlineKeyboardButton(text="🩺مشاوره پزشکی", callback_data="chatgpt"), row=6)
+    reply_markup.add(InlineKeyboardButton(text="🎬 دانلودر", callback_data="downloader_menu"), row=7)
 
     first_name = message.from_user.first_name if message.from_user and message.from_user.first_name else "کاربر"
     with open("اسامی اشخاص ربات.txt", "a+", encoding="utf-8") as f:
